@@ -1,4 +1,4 @@
-package main
+package core
 
 // MappingConfig задает правила переноса данных для конкретной таблицы.
 type MappingConfig struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -27,7 +28,7 @@ type ChunkRange struct {
 
 // CreateChunks оценивает размер таблицы в страницах (блоках) и нарезает её на ctid-диапазоны.
 // chunkSize здесь означает желаемое количество строк на чанк (например, 50 000).
-func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table string, chunkSize int) ([]ChunkRange, error) {
+func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table string, chunkSize int) ([]any, error) {
 	// 1. Запрашиваем у системного каталога Postgres количество физических страниц (relpages)
 	// и приблизительное количество строк (reltuples).
 	query := `
@@ -62,7 +63,7 @@ func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table
 	}
 
 	// 3. Нарезаем диапазоны страниц
-	var chunks []ChunkRange
+	var chunks []any
 	var chunkID int64 = 1
 
 	for startPage := int64(0); startPage < relPages; startPage += pagesPerChunk {
@@ -83,18 +84,22 @@ func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table
 }
 
 // StreamChunk выполняет эффективный Tid Range Scan для конкретного чанка и отправляет данные в Go-канал.
-func (ps *PostgresSource) StreamChunk(ctx context.Context, schema string, table string, columns []string, chunk ChunkRange, out chan<- []any) error {
-	// Формируем имена колонок для SELECT
-	colsSQL := `"` + columns[0] + `"`
-	for i := 1; i < len(columns); i++ {
-		colsSQL += `, "` + columns[i] + `"`
-	}
+func (ps *PostgresSource) StreamChunk(ctx context.Context, schema string, table string, columns []string, chunk any, out chan<- []any) error {
+	// 1. Распаковываем пустой интерфейс any в конкретную структуру Postgres
+	ch := chunk.(ChunkRange)
 
-	// Строим SQL-запрос с фильтрацией по физическим ctid-адресам (Tid Range Scan)
-	// Важно: Валидный формат ctid на границах — '(page_id, 0)'
+	// 2. Идиоматичный и безопасный сбор колонок: экранируем каждую колонку кавычками
+	escapedCols := make([]string, len(columns))
+	for i, col := range columns {
+		escapedCols[i] = `"` + col + `"`
+	}
+	// strings.Join склеит массив через запятую (аналог String.join в Java)
+	colsSQL := strings.Join(escapedCols, ", ")
+
+	// 3. Строим SQL-запрос. ИСПОЛЬЗУЕМ ПЕРЕМЕННУЮ ch вместо chunk!
 	query := fmt.Sprintf(
-		`SELECT %s FROM %s.%s WHERE ctid >= '(%d,0)'::tid AND ctid < '(%d,0)'::tid`,
-		colsSQL, schema, table, chunk.StartPage, chunk.EndPage,
+		`SELECT %s FROM "%s"."%s" WHERE ctid >= '(%d,0)'::tid AND ctid < '(%d,0)'::tid`,
+		colsSQL, schema, table, ch.StartPage, ch.EndPage,
 	)
 
 	// Выполняем потоковое чтение
@@ -106,13 +111,11 @@ func (ps *PostgresSource) StreamChunk(ctx context.Context, schema string, table 
 
 	// Читаем строки по одной
 	for rows.Next() {
-		// pgx позволяет динамически считывать строку в срез any
 		values, err := rows.Values()
 		if err != nil {
 			return fmt.Errorf("failed to scan row values: %w", err)
 		}
 
-		// Передаем строку в канал (воркер на стороне Target её сразу подхватит)
 		select {
 		case out <- values:
 		case <-ctx.Done():

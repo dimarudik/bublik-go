@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bublik-go/core"
 	"context"
 	"fmt"
 	"log"
@@ -26,7 +27,7 @@ func main() {
 	setupTables(ctx, pool)
 
 	// 1. Декларативно объявляем правила маппинга (Аналог JSON конфига из Java)
-	config := MappingConfig{
+	config := core.MappingConfig{
 		FromSchema: "public",
 		FromTable:  "users_src",
 		ToSchema:   "public",
@@ -42,7 +43,7 @@ func main() {
 	// 2. Создаем компоненты и передаем их в конструктор Engine
 	source := postgres.NewPostgresSource(pool)
 	target := postgres.NewPostgresTarget(pool)
-	engine := NewEngine(source, target)
+	engine := core.NewEngine(source, target)
 
 	// 3. Запускаем движок!
 	// Параметры: контекст, конфиг, chunkSize = 3 строки, threadCount = 3 параллельных воркера
