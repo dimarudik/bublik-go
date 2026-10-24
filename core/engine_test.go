@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -91,5 +92,62 @@ func TestEngine_Run_Success(t *testing.T) {
 
 	if mockTrg.rowsWritten != expectedRows {
 		t.Errorf("Target не зафиксировал нужный объем строк. Ожидалось: %d, Получено: %d", expectedRows, mockTrg.rowsWritten)
+	}
+}
+
+// MockErrorTarget имитирует целевую базу данных, которая падает с ошибкой на определенном чанке.
+type MockErrorTarget struct {
+	rowsWritten int64
+}
+
+func (m *MockErrorTarget) WriteChunkUpsert(ctx context.Context, table string, columns []string, pkColumns []string, rows <-chan []any) (int64, error) {
+	// Вычитываем канал, чтобы горутина-продюсер (Source) не зависла
+	var count int64
+	for range rows {
+		count++
+	}
+
+	// Имитируем сбой: если прилетели данные, выкидываем ошибку базы данных (например, обрыв сетевого соединения)
+	return 0, errors.New("failed to write to postgres: connection reset by peer")
+}
+
+// TestEngine_Run_WithTargetError проверяет, что движок корректно обрабатывает сбои записи
+func TestEngine_Run_WithTargetError(t *testing.T) {
+	ctx := context.Background()
+
+	// Готовим 2 фейковых чанка
+	fakeChunks := []any{int64(1), int64(2)}
+	fakeRows := [][]any{
+		{1, "Тест", "test@bublik.dev", time.Now()},
+	}
+
+	mockSrc := &MockSource{mockChunks: fakeChunks, mockRows: fakeRows}
+	// Подсовываем наш новый сбойный Target
+	mockErrTrg := &MockErrorTarget{}
+
+	engine := NewEngine(mockSrc, mockErrTrg)
+
+	cfg := MappingConfig{
+		FromSchema: "public",
+		FromTable:  "test_src",
+		ToSchema:   "public",
+		ToTable:    "test_trg",
+		Columns:    map[string]string{"id": "id"},
+	}
+
+	// Запускаем движок
+	result, err := engine.Run(ctx, cfg, 3, 2)
+
+	// Проверяем контракты:
+	// 1. Сам движок не должен падать с паникой или возвращать глобальную ошибку,
+	//    так как он должен дать шанс обработаться другим чанкам.
+	if err != nil {
+		t.Fatalf("Движок не должен возвращать критическую ошибку, если упал отдельный воркер: %v", err)
+	}
+
+	// 2. Так как Target на все чанки возвращал ошибку, итоговое количество успешно
+	//    перенесенных строк должно быть строго равно 0.
+	if result.TotalRows != 0 {
+		t.Errorf("Ожидалось 0 успешно перенесенных строк из-за ошибок БД, но получено: %d", result.TotalRows)
 	}
 }
