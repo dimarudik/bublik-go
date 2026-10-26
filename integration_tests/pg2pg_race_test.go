@@ -15,11 +15,10 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	totalRows := 100000 // Заливаем 100 тысяч записей для создания реальной нагрузки
-	chunkSize := 5000   // Получим ровно 20 физических чанков
-	threadCount := 10   // 10 горутин-воркеров будут рвать этот пайплайн параллельно
+	totalRows := 100000
+	chunkSize := 5000
+	threadCount := 10
 
-	// 1. Поднимаем контейнер Postgres 17
 	t.Log("Инициализация Docker-контейнера для стресс-теста...")
 	pgInst, err := StartPostgresContainer(ctx, "bublik_stress", "postgres", "postgres")
 	if err != nil {
@@ -30,14 +29,6 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 		_ = pgInst.Container.Terminate(ctx)
 	}()
 
-	/*	// 2. Накатываем схемы и генерируем 100k строк данных
-		t.Logf("Генерация тестовых данных (%d строк)... Это может занять пару секунд.", totalRows)
-		err = SeedPostgresData(ctx, pgInst.Pool, totalRows)
-		if err != nil {
-			t.Fatalf("Ошибка генерации данных: %v", err)
-		}
-	*/
-	// 3. Собираем конфигурацию миграции
 	config := core.Config{
 		FromSchemaName: "public",
 		FromTableName:  "users_src",
@@ -59,7 +50,6 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 
 	startTime := time.Now()
 
-	// 4. Штурмуем движок
 	result, err := engine.Run(ctx, config, chunkSize, threadCount)
 	if err != nil {
 		t.Fatalf("Движок рухнул под нагрузкой: %v", err)
@@ -68,12 +58,10 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 	duration := time.Since(startTime)
 	t.Logf("Стресс-миграция завершена за %v. Перенесено строк по отчету: %d", duration, result.TotalRows)
 
-	// 5. ЖЕСТКАЯ ПРОВЕРКА ДАННЫХ (E2E Ассерты)
 	if result.TotalRows != int64(totalRows) {
 		t.Errorf("Движок потерял строки по дороге! Ожидалось %d, перенесено %d", totalRows, result.TotalRows)
 	}
 
-	// Делаем физический SELECT COUNT(*) к целевой таблице в контейнере
 	var targetCount int
 	err = pgInst.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM users_trg").Scan(&targetCount)
 	if err != nil {
@@ -84,7 +72,6 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 		t.Errorf("Физическая проверка данных провалена! В базе-приемнике %d строк вместо %d", targetCount, totalRows)
 	}
 
-	// Дополнительно проверяем, что Exactly-Once метаданные записали все 20 чанков
 	var outboxCount int
 	err = pgInst.Pool.QueryRow(ctx, "SELECT COUNT(*) FROM bublik_outbox").Scan(&outboxCount)
 	if err != nil {
