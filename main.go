@@ -6,76 +6,113 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/spf13/cobra"
 )
 
 func main() {
-	ctx := context.Background()
-	connStr := "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+	// Создаем корневую команду CLI (Аналог Options и Parser из Apache Commons CLI)
+	var (
+		configFile string
+		mappingFile string
+		chunkSize   int
+		mode        string
+	)
 
-	log.Println("Инициализация пула соединений...")
-	pool, err := pgxpool.New(ctx, connStr)
-	if err != nil {
-		log.Fatalf("Ошибка пула: %v", err)
+	var rootCmd = &cobra.Command{
+		Use:   "bublik-go",
+		Short: "Bublik-Go — высокопроизводительная утилита миграции данных",
+		Long:  `Инфраструктурный инструмент переноса данных между СУБД с поддержкой Exactly-Once, физического чанкования и параллельных воркеров.`,
+		// Функция RunE выполнится только тогда, когда аргументы командной строки успешно распарсятся
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+
+			// 1. Читаем настройки подключений из YAML-файла, переданного через флаг -c / --config
+			props, err := core.LoadConnectionProperties(configFile)
+			if err != nil {
+				return fmt.Errorf("ошибка загрузки свойств подключения: %w", err)
+			}
+
+			// 2. Читаем маппинги таблиц из JSON-файла, переданного через флаг -m / --mapping
+			configs, err := core.LoadMappingConfigs(mappingFile)
+			if err != nil {
+				return fmt.Errorf("ошибка загрузки маппингов таблиц: %w", err)
+			}
+
+			log.Printf("[CLI] Загружен конфиг '%s' (воркеров: %d). Найдено таблиц для переноса: %d",
+				configFile, props.ThreadCount, len(configs))
+			log.Printf("[CLI] Режим выполнения (режим передан через флаг): %s", mode)
+
+			// 3. Подключаемся к базе данных
+			// Берем URL из секции toProperties нашего YAML, как в Java-версии
+			connStr, ok := props.ToProperties["url"]
+			if !ok || connStr == "" {
+				connStr = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable" // дефолт
+			}
+
+			log.Println("[CLI] Инициализация пула соединений СУБД...")
+			pool, err := pgxpool.New(ctx, connStr)
+			if err != nil {
+				return fmt.Errorf("ошибка инициализации пула: %w", err)
+			}
+			defer pool.Close()
+
+			// Временная настройка таблиц для тестов (можно убрать в продакшене)
+			setupTables(ctx, pool)
+
+			// 4. Инициализируем компоненты движка
+			source := postgres.NewPostgresSource(pool)
+			target := postgres.NewPostgresTarget(pool)
+			engine := core.NewEngine(source, target)
+
+			totalRows := int64(0)
+			sessionStart := time.Now()
+
+			// 5. Потоковый цикл по конфигурациям таблиц
+			for _, config := range configs {
+				log.Printf("[CLI] Накатываем пайплайн: %s.%s -> %s.%s",
+					config.FromSchemaName, config.FromTableName, config.ToSchemaName, config.ToTableName)
+
+				// Запускаем движок!
+				// Передаем динамический chunkSize из флага -k и threadCount из YAML файла
+				result, err := engine.Run(ctx, config, chunkSize, props.ThreadCount)
+				if err != nil {
+					log.Printf("[Ошибка] Таблица %s пропущена из-за сбоя: %v", config.FromTableName, err)
+					continue
+				}
+				totalRows += result.TotalRows
+			}
+
+			fmt.Printf("\n====================================\n")
+			fmt.Printf("МИГРАЦИЯ УСПЕШНО ВЫПОЛНЕНА ДВИЖКОМ\n")
+			fmt.Printf("Всего перенесено строк: %d\n", totalRows)
+			fmt.Printf("Общее время работы сессии: %v\n", time.Since(sessionStart))
+			fmt.Printf("====================================\n")
+
+			return nil
+		},
 	}
-	defer pool.Close()
 
-	// Настраиваем тестовую среду
-	setupTables(ctx, pool)
+	// Регистрируем флаги (Аналог Option.builder() из Java)
+	rootCmd.Flags().StringVarP(&configFile, "config", "c", "pg2pg.yaml", "путь к YAML-файлу свойств подключения")
+	rootCmd.Flags().StringVarP(&mappingFile, "mapping", "m", "columnOrder.json", "путь к JSON-файлу маппингов таблиц")
+	rootCmd.Flags().IntVarP(&chunkSize, "chunk", "k", 3, "размер физического чанка (количество строк)")
+	rootCmd.Flags().StringVarP(&mode, "mode", "s", "UPSERT", "режим выполнения (COPY или UPSERT)")
 
-	// 1. Читаем настройки подключений из YAML
-	props, err := core.LoadConnectionProperties("pg2pg.yaml")
-	if err != nil {
-		log.Fatalf("Ошибка загрузки свойств подключения: %v", err)
+	// Указываем, какие флаги являются обязательными для работы
+	_ = rootCmd.MarkFlagRequired("config")
+	_ = rootCmd.MarkFlagRequired("mapping")
+
+	// Запускаем CLI приложение
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
 	}
-
-	// 2. Читаем маппинги таблиц из JSON
-	configs, err := core.LoadMappingConfigs("columnOrder.json")
-	if err != nil {
-		log.Fatalf("Ошибка загрузки маппингов: %v", err)
-	}
-
-	log.Printf("Конфиги успешно загружены! Потоков из YAML: %d, Таблиц для миграции: %d", props.ThreadCount, len(configs))
-
-	// 3. Создаем компоненты движка
-	source := postgres.NewPostgresSource(pool)
-	target := postgres.NewPostgresTarget(pool)
-	engine := core.NewEngine(source, target)
-
-	log.Println("Старт движка миграции Bublik-Go...")
-
-	// Общая статистика по всей сессии миграции
-	var totalRows int64
-	sessionStart := time.Now()
-
-	// 4. Итерируемся по списку таблиц из файла (как в App.java)
-	for _, config := range configs {
-		log.Printf("--- Запуск миграции таблицы %s.%s -> %s.%s ---",
-			config.FromSchemaName, config.FromTableName, config.ToSchemaName, config.ToTableName)
-
-		// Подставляем динамические параметры:
-		// config — текущая таблица из файла
-		// 3 — размер чанка (позже вынесем в параметры командной строки)
-		// props.ThreadCount — количество потоков воркеров строго из YAML файла!
-		result, err := engine.Run(ctx, config, 3, props.ThreadCount)
-		if err != nil {
-			log.Printf("[Ошибка] Миграция таблицы %s провалена: %v", config.FromTableName, err)
-			continue // Переходим к следующей таблице, не роняя всё приложение
-		}
-
-		totalRows += result.TotalRows
-	}
-
-	fmt.Printf("\n====================================\n")
-	fmt.Printf("МИГРАЦИЯ УСПЕШНО ВЫПОЛНЕНА ДВИЖКОМ\n")
-	fmt.Printf("Всего перенесено строк во всех таблицах: %d\n", totalRows)
-	fmt.Printf("Общее время работы сессии: %v\n", time.Since(sessionStart))
-	fmt.Printf("====================================\n")
 }
 
-// Функция setupTables остается без изменений внизу файла main.go...
+// Функция setupTables остается без изменений в самом низу файла main.go...
 func setupTables(ctx context.Context, pool *pgxpool.Pool) {
 	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS users_src;")
 	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS users_trg;")
