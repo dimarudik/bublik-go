@@ -3,6 +3,7 @@ package integration_tests
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,12 +20,18 @@ type PostgresInstance struct {
 
 // StartPostgresContainer поднимает чистый контейнер Postgres в Docker
 func StartPostgresContainer(ctx context.Context, dbName, user, password string) (*PostgresInstance, error) {
+	initScriptPath, err := filepath.Abs("../deploy/postgres/pg-init.sql")
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve absolute path for init script: %w", err)
+	}
+
 	// Настраиваем параметры контейнера (константные образы, стратегии ожидания сокетов)
 	container, err := postgres.Run(ctx,
 		"postgres:17",
 		postgres.WithDatabase(dbName),
 		postgres.WithUsername(user),
 		postgres.WithPassword(password),
+		postgres.WithInitScripts(initScriptPath),
 		testcontainers.WithWaitStrategy(
 			wait.ForLog("database system is ready to accept connections").
 				WithOccurrence(2).
@@ -53,7 +60,7 @@ func StartPostgresContainer(ctx context.Context, dbName, user, password string) 
 	}, nil
 }
 
-// SeedPostgresData создает таблицы и наполняет их данными для конкретного теста
+/*// SeedPostgresData создает таблицы и наполняет их данными для конкретного теста
 func SeedPostgresData(ctx context.Context, pool *pgxpool.Pool, totalRows int) error {
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS users_src (
@@ -92,3 +99,4 @@ func SeedPostgresData(ctx context.Context, pool *pgxpool.Pool, totalRows int) er
 	_, err = pool.Exec(ctx, "ANALYZE users_src;")
 	return err
 }
+*/

@@ -26,13 +26,13 @@ func TestIntegration_PostgresToPostgres_Upsert(t *testing.T) {
 		_ = pgInst.Container.Terminate(ctx)
 	}()
 
-	// 2. Накатываем тестовую схему и заливаем 10 строк
-	t.Log("Наполнение СУБД тестовыми данными...")
-	err = SeedPostgresData(ctx, pgInst.Pool, 10)
-	if err != nil {
-		t.Fatalf("Ошибка подготовки данных: %v", err)
-	}
-
+	/*	// 2. Накатываем тестовую схему и заливаем 10 строк
+		t.Log("Наполнение СУБД тестовыми данными...")
+		err = SeedPostgresData(ctx, pgInst.Pool, 10)
+		if err != nil {
+			t.Fatalf("Ошибка подготовки данных: %v", err)
+		}
+	*/
 	// 3. Конфигурируем наш Бублик-Go на работу с контейнером
 	config := core.Config{
 		FromSchemaName: "public",
