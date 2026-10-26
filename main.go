@@ -16,7 +16,7 @@ import (
 func main() {
 	// Создаем корневую команду CLI (Аналог Options и Parser из Apache Commons CLI)
 	var (
-		configFile string
+		configFile  string
 		mappingFile string
 		chunkSize   int
 		mode        string
@@ -61,7 +61,7 @@ func main() {
 			defer pool.Close()
 
 			// Временная настройка таблиц для тестов (можно убрать в продакшене)
-			setupTables(ctx, pool)
+			//setupTables(ctx, pool)
 
 			// 4. Инициализируем компоненты движка
 			source := postgres.NewPostgresSource(pool)
@@ -112,7 +112,7 @@ func main() {
 	}
 }
 
-// Функция setupTables остается без изменений в самом низу файла main.go...
+/*// Функция setupTables остается без изменений в самом низу файла main.go...
 func setupTables(ctx context.Context, pool *pgxpool.Pool) {
 	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS users_src;")
 	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS users_trg;")
@@ -150,3 +150,4 @@ func setupTables(ctx context.Context, pool *pgxpool.Pool) {
 		log.Fatalf("Ошибка выполнения ANALYZE: %v", err)
 	}
 }
+*/
