@@ -2,14 +2,13 @@ package main
 
 import (
 	"bublik-go/core"
+	"bublik-go/postgres"
 	"context"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"bublik-go/postgres"
 )
 
 func main() {
@@ -26,37 +25,53 @@ func main() {
 	// Настраиваем тестовую среду
 	setupTables(ctx, pool)
 
-	// 1. Декларативно объявляем правила маппинга (Аналог JSON конфига из Java)
-	config := core.MappingConfig{
-		FromSchema: "public",
-		FromTable:  "users_src",
-		ToSchema:   "public",
-		ToTable:    "users_trg",
-		Columns: map[string]string{
-			"id":         "id",
-			"name":       "name",
-			"email":      "email",
-			"updated_at": "updated_at",
-		},
+	// 1. Читаем настройки подключений из YAML
+	props, err := core.LoadConnectionProperties("pg2pg.yaml")
+	if err != nil {
+		log.Fatalf("Ошибка загрузки свойств подключения: %v", err)
 	}
 
-	// 2. Создаем компоненты и передаем их в конструктор Engine
+	// 2. Читаем маппинги таблиц из JSON
+	configs, err := core.LoadMappingConfigs("columnOrder.json")
+	if err != nil {
+		log.Fatalf("Ошибка загрузки маппингов: %v", err)
+	}
+
+	log.Printf("Конфиги успешно загружены! Потоков из YAML: %d, Таблиц для миграции: %d", props.ThreadCount, len(configs))
+
+	// 3. Создаем компоненты движка
 	source := postgres.NewPostgresSource(pool)
 	target := postgres.NewPostgresTarget(pool)
 	engine := core.NewEngine(source, target)
 
-	// 3. Запускаем движок!
-	// Параметры: контекст, конфиг, chunkSize = 3 строки, threadCount = 3 параллельных воркера
 	log.Println("Старт движка миграции Bublik-Go...")
-	result, err := engine.Run(ctx, config, 3, 3)
-	if err != nil {
-		log.Fatalf("Движок завершился с ошибкой: %v", err)
+
+	// Общая статистика по всей сессии миграции
+	var totalRows int64
+	sessionStart := time.Now()
+
+	// 4. Итерируемся по списку таблиц из файла (как в App.java)
+	for _, config := range configs {
+		log.Printf("--- Запуск миграции таблицы %s.%s -> %s.%s ---",
+			config.FromSchemaName, config.FromTableName, config.ToSchemaName, config.ToTableName)
+
+		// Подставляем динамические параметры:
+		// config — текущая таблица из файла
+		// 3 — размер чанка (позже вынесем в параметры командной строки)
+		// props.ThreadCount — количество потоков воркеров строго из YAML файла!
+		result, err := engine.Run(ctx, config, 3, props.ThreadCount)
+		if err != nil {
+			log.Printf("[Ошибка] Миграция таблицы %s провалена: %v", config.FromTableName, err)
+			continue // Переходим к следующей таблице, не роняя всё приложение
+		}
+
+		totalRows += result.TotalRows
 	}
 
 	fmt.Printf("\n====================================\n")
 	fmt.Printf("МИГРАЦИЯ УСПЕШНО ВЫПОЛНЕНА ДВИЖКОМ\n")
-	fmt.Printf("Всего перенесено строк: %d\n", result.TotalRows)
-	fmt.Printf("Время работы пайплайна: %v\n", result.Duration)
+	fmt.Printf("Всего перенесено строк во всех таблицах: %d\n", totalRows)
+	fmt.Printf("Общее время работы сессии: %v\n", time.Since(sessionStart))
 	fmt.Printf("====================================\n")
 }
 

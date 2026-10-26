@@ -27,20 +27,20 @@ type Result struct {
 	Duration  time.Duration
 }
 
-func (e *Engine) Run(ctx context.Context, cfg MappingConfig, chunkSize int, threadCount int) (*Result, error) {
+func (e *Engine) Run(ctx context.Context, cfg Config, chunkSize int, threadCount int) (*Result, error) {
 	startTime := time.Now()
 
 	var srcColumns []string
 	var trgColumns []string
-	for srcCol, trgCol := range cfg.Columns {
+	for srcCol, trgCol := range cfg.ColumnToColumn {
 		srcColumns = append(srcColumns, srcCol)
 		trgColumns = append(trgColumns, trgCol)
 	}
 	pkColumns := []string{"id"}
 
 	// Вызов CreateChunks через интерфейс
-	log.Printf("[Engine] Нарезка чанков для таблицы %s.%s...", cfg.FromSchema, cfg.FromTable)
-	chunks, err := e.source.CreateChunks(ctx, cfg.FromSchema, cfg.FromTable, chunkSize)
+	log.Printf("[Engine] Нарезка чанков для таблицы %s.%s...", cfg.FromSchemaName, cfg.FromTableName)
+	chunks, err := e.source.CreateChunks(ctx, cfg.FromSchemaName, cfg.FromTableName, chunkSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to slice chunks: %w", err)
 	}
@@ -68,11 +68,11 @@ func (e *Engine) Run(ctx context.Context, cfg MappingConfig, chunkSize int, thre
 				// Потоковый продюсер
 				go func(ch any) {
 					defer close(rowChan)
-					_ = e.source.StreamChunk(ctx, cfg.FromSchema, cfg.FromTable, srcColumns, ch, rowChan)
+					_ = e.source.StreamChunk(ctx, cfg.FromSchemaName, cfg.FromTableName, srcColumns, ch, rowChan)
 				}(chunk)
 
 				// Потоковый консьюмер
-				inserted, err := e.target.WriteChunkUpsert(ctx, cfg.ToTable, trgColumns, pkColumns, rowChan)
+				inserted, err := e.target.WriteChunkUpsert(ctx, cfg.ToTableName, trgColumns, pkColumns, rowChan)
 				if err != nil {
 					log.Printf("[Воркер #%d][Ошибка Записи]: %v", workerID, err)
 					continue

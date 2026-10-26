@@ -1,0 +1,14 @@
+[
+  {
+    "fromSchemaName": "public",
+    "fromTableName": "users_src",
+    "toSchemaName": "public",
+    "toTableName": "users_trg",
+    "columnToColumn": {
+      "id": "id",
+      "name": "name",
+      "email": "email",
+      "updated_at": "updated_at"
+    }
+  }
+]

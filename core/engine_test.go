@@ -67,12 +67,12 @@ func TestEngine_Run_Success(t *testing.T) {
 	engine := NewEngine(mockSrc, mockTrg)
 
 	// Настраиваем фейковый конфиг
-	cfg := MappingConfig{
-		FromSchema: "public",
-		FromTable:  "test_src",
-		ToSchema:   "public",
-		ToTable:    "test_trg",
-		Columns:    map[string]string{"id": "id", "name": "name"},
+	cfg := Config{
+		FromSchemaName: "public",
+		FromTableName:  "test_src",
+		ToSchemaName:   "public",
+		ToTableName:    "test_trg",
+		ColumnToColumn: map[string]string{"id": "id", "name": "name"},
 	}
 
 	// 2. ЗАПУСКАЕМ ДВИЖОК
@@ -127,12 +127,12 @@ func TestEngine_Run_WithTargetError(t *testing.T) {
 
 	engine := NewEngine(mockSrc, mockErrTrg)
 
-	cfg := MappingConfig{
-		FromSchema: "public",
-		FromTable:  "test_src",
-		ToSchema:   "public",
-		ToTable:    "test_trg",
-		Columns:    map[string]string{"id": "id"},
+	cfg := Config{
+		FromSchemaName: "public",
+		FromTableName:  "test_src",
+		ToSchemaName:   "public",
+		ToTableName:    "test_trg",
+		ColumnToColumn: map[string]string{"id": "id"},
 	}
 
 	// Запускаем движок
