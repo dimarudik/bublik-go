@@ -4,7 +4,6 @@ import (
 	"bublik-go/core"
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -31,9 +30,7 @@ type ChunkRange struct {
 	EndPage   int64
 }
 
-// CreateChunks оценивает размер таблицы в страницах (блоках) и нарезает её на ctid-диапазоны.
-// chunkSize здесь означает желаемое количество строк на чанк (например, 50 000).
-func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table string, chunkSize int) ([]any, error) {
+/*func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table string, chunkSize int) ([]any, error) {
 	chunkTableName := ps.chunkTable.FullName()
 	taskName := fmt.Sprintf("task_%s_%s", strings.ToLower(schema), strings.ToLower(table))
 
@@ -128,7 +125,7 @@ func (ps *PostgresSource) CreateChunks(ctx context.Context, schema string, table
 
 	return chunks, nil
 }
-
+*/
 // StreamChunk выполняет эффективный Tid Range Scan для конкретного чанка и отправляет данные в Go-канал.
 func (ps *PostgresSource) StreamChunk(ctx context.Context, schema string, table string, columns []string, chunk any, out chan<- []any) error {
 	// Распаковываем универсальный интерфейс в нашу строго типизированную структуру на генериках
@@ -230,12 +227,6 @@ func (ps *PostgresSource) SliceAndPersistChunks(ctx context.Context, cfg core.Co
 	chunkTableName := ps.chunkTable.FullName()
 	taskName := fmt.Sprintf("task_%s_%s", strings.ToLower(cfg.FromSchemaName), strings.ToLower(cfg.FromTableName))
 
-	// Обеспечиваем существование таблицы чанков
-	createTableSQL := fmt.Sprintf(DDL_CREATE_CHUNK_TABLE, chunkTableName)
-	if _, err := ps.conn.Exec(ctx, createTableSQL); err != nil {
-		return fmt.Errorf("failed to ensure chunk table exists: %w", err)
-	}
-
 	var relPages int64
 	var relTuples float64
 	err := ps.conn.QueryRow(ctx, "SELECT relpages::bigint, reltuples FROM pg_class WHERE relnamespace::regnamespace::text = $1 AND relname = $2", cfg.FromSchemaName, cfg.FromTableName).Scan(&relPages, &relTuples)
@@ -252,22 +243,12 @@ func (ps *PostgresSource) SliceAndPersistChunks(ctx context.Context, cfg core.Co
 	}
 	defer tx.Rollback(ctx)
 
-	var existingCount int64
-	checkQuery := fmt.Sprintf("SELECT COUNT(1) FROM %s WHERE task_name = $1", chunkTableName)
-	if err := tx.QueryRow(ctx, checkQuery, taskName).Scan(&existingCount); err != nil {
-		return err
+	insertQuery := fmt.Sprintf(DML_BATCH_INSERT_CHUNK_TABLE, chunkTableName)
+	_, err = tx.Exec(ctx, insertQuery, chunkSize, taskName, cfg.FromSchemaName, cfg.FromTableName, 0, relPages, chunkSize)
+	if err != nil {
+		return fmt.Errorf("failed to batch insert chunks via generate_series: %w", err)
 	}
-
-	// Если чанков нет — генерируем реестр
-	if existingCount == 0 {
-		insertQuery := fmt.Sprintf(DML_BATCH_INSERT_CHUNK_TABLE, chunkTableName)
-		_, err = tx.Exec(ctx, insertQuery, chunkSize, taskName, cfg.FromSchemaName, cfg.FromTableName, 0, relPages, chunkSize)
-		if err != nil {
-			return fmt.Errorf("failed to batch insert chunks via generate_series: %w", err)
-		}
-		return tx.Commit(ctx)
-	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // FetchAvailableChunks выгребает ВСЕ неназначенные чанки по списку наших задач (Фаза 2)

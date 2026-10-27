@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 // Engine теперь зависит ТОЛЬКО от абстрактных интерфейсов нашего ядра.
@@ -41,6 +43,13 @@ func (e *Engine) Run(ctx context.Context, configs []Config, chunkSize int, threa
 
 	// Хранилище динамических метаданных колонок, чтобы не вычитывать их повторно в воркерах
 	tableMetaMap := make(map[string]Table)
+
+	chunkTableName := .chunkTable.FullName()
+	createTableSQL := fmt.Sprintf(DDL_CREATE_CHUNK_TABLE, chunkTableName)
+	if _, err := ps.conn.Exec(ctx, createTableSQL); err != nil {
+		return fmt.Errorf("failed to ensure chunk table exists: %w", err)
+	}
+
 
 	for _, cfg := range configs {
 		// 1.1. Вычитываем структуру метаданных СУБД для кэша движка
