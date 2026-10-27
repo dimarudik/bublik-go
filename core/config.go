@@ -18,3 +18,29 @@ type Config struct {
 	FetchWhereClause string            `json:"fetchWhereClause,omitempty" yaml:"fetchWhereClause,omitempty"`
 	// При необходимости сюда легко добавляются остальные поля из Java рекорда (withTTL, timestamp и др.)
 }
+
+// GetChunkTable возвращает дефолтную или кастомную доменную модель таблицы чанков.
+func (cp *ConnectionProperties) GetChunkTable() Table {
+	schema := cp.FromProperties["chunkSchemaName"]
+	table := cp.FromProperties["chunkTableName"]
+	if schema == "" {
+		schema = "public"
+	}
+	if table == "" {
+		table = "bublik_chunk"
+	}
+	return Table{SchemaName: schema, TableName: table}
+}
+
+// GetOutboxTable возвращает дефолтную или кастомную доменную модель таблицы аутбокса.
+func (cp *ConnectionProperties) GetOutboxTable() Table {
+	schema := cp.ToProperties["outboxSchemaName"]
+	table := cp.ToProperties["outboxTableName"]
+	if schema == "" {
+		schema = "public"
+	}
+	if table == "" {
+		table = "bublik_outbox"
+	}
+	return Table{SchemaName: schema, TableName: table}
+}

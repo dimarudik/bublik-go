@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
@@ -60,36 +59,34 @@ func main() {
 			}
 			defer pool.Close()
 
-			// Временная настройка таблиц для тестов (можно убрать в продакшене)
-			//setupTables(ctx, pool)
+			// Извлекаем доменную модель таблицы чанков из YAML-конфига (кастомную или дефолтную) [1.12]
+			chunkTable := props.GetChunkTable()
+			log.Printf("[CLI] Служебная таблица метаданных чанков: %s", chunkTable.FullName())
 
 			// 4. Инициализируем компоненты движка
-			source := postgres.NewPostgresSource(pool)
+			// Передаем chunkTable вторым аргументом в конструктор пакета postgres! [1.12]
+			source := postgres.NewPostgresSource(pool, chunkTable)
 			target := postgres.NewPostgresTarget(pool)
 			engine := core.NewEngine(source, target)
 
-			totalRows := int64(0)
-			sessionStart := time.Now()
+			//totalRows := int64(0)
+			//sessionStart := time.Now()
 
-			// 5. Потоковый цикл по конфигурациям таблиц
-			for _, config := range configs {
-				log.Printf("[CLI] Накатываем пайплайн: %s.%s -> %s.%s",
-					config.FromSchemaName, config.FromTableName, config.ToSchemaName, config.ToTableName)
+			// Внутри main.go в методе RunE:
+			log.Println("Старт двухфазного движка миграции Bublik-Go...")
 
-				// Запускаем движок!
-				// Передаем динамический chunkSize из флага -k и threadCount из YAML файла
-				result, err := engine.Run(ctx, config, chunkSize, props.ThreadCount)
-				if err != nil {
-					log.Printf("[Ошибка] Таблица %s пропущена из-за сбоя: %v", config.FromTableName, err)
-					continue
-				}
-				totalRows += result.TotalRows
+			// 5. Запускаем двухфазный движок миграции для всего массива таблиц скопом
+			log.Println("[CLI] Старт двухфазного движка миграции Bublik-Go...")
+			result, err := engine.Run(ctx, configs, chunkSize, props.ThreadCount, source)
+			if err != nil {
+				return fmt.Errorf("критическая ошибка движка миграции: %w", err)
 			}
 
+			// ТЕПЕРЬ МЫ ИСПОЛЬЗУЕМ ПЕРЕМЕННУЮ result, И КОМПИЛЯТОР БУДЕТ ДОВОЛЕН!
 			fmt.Printf("\n====================================\n")
 			fmt.Printf("МИГРАЦИЯ УСПЕШНО ВЫПОЛНЕНА ДВИЖКОМ\n")
-			fmt.Printf("Всего перенесено строк: %d\n", totalRows)
-			fmt.Printf("Общее время работы сессии: %v\n", time.Since(sessionStart))
+			fmt.Printf("Всего перенесено строк во всех таблицах: %d\n", result.TotalRows)
+			fmt.Printf("Общее время работы сессии: %v\n", result.Duration)
 			fmt.Printf("====================================\n")
 
 			return nil

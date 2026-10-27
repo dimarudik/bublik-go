@@ -37,12 +37,19 @@ func TestIntegration_PostgresToPostgres_Upsert(t *testing.T) {
 		},
 	}
 
-	source := postgres.NewPostgresSource(pgInst.Pool)
+	// 1. Создаем доменную модель дефолтной таблицы чанков для этого теста [1.12]
+	chunkTable := core.Table{SchemaName: "public", TableName: "bublik_chunk"}
+
+	// 2. Инициализируем компоненты с учетом новых параметров
+	source := postgres.NewPostgresSource(pgInst.Pool, chunkTable)
 	target := postgres.NewPostgresTarget(pgInst.Pool)
 	engine := core.NewEngine(source, target)
 
 	t.Log("Старт движка миграции...")
-	result, err := engine.Run(ctx, config, 3, 2)
+
+	// 3. Передаем source последним аргументом в качестве провайдера метаданных [1.12]
+	configs := []core.Config{config}
+	result, err := engine.Run(ctx, configs, 3, 2, source)
 	if err != nil {
 		t.Fatalf("Движок завершился со сбоем: %v", err)
 	}

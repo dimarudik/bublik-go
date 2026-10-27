@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,26 +28,52 @@ type Result struct {
 	Duration  time.Duration
 }
 
-func (e *Engine) Run(ctx context.Context, cfg Config, chunkSize int, threadCount int) (*Result, error) {
+// Run запускает двухфазный конвейер миграции: сначала полная нарезка всех таблиц, затем параллельное выполнение
+func (e *Engine) Run(ctx context.Context, configs []Config, chunkSize int, threadCount int, sourceMetadataProvider interface {
+	EnrichTableMetadata(ctx context.Context, schema, table string) (Table, error)
+}) (*Result, error) {
 	startTime := time.Now()
 
-	var srcColumns []string
-	var trgColumns []string
-	for srcCol, trgCol := range cfg.ColumnToColumn {
-		srcColumns = append(srcColumns, srcCol)
-		trgColumns = append(trgColumns, trgCol)
-	}
-	pkColumns := []string{"id"}
+	// =========================================================================
+	// ФАЗА 1: ГЕНЕРАЦИЯ ПОЛНОГО РЕЕСТРА ЗАДАЧ (Pre-Slicing)
+	// =========================================================================
+	log.Println("[Engine] === СТАРТ ФАЗЫ 1: Нарезка и фиксация чанков для ВСЕХ таблиц ===")
 
-	// Вызов CreateChunks через интерфейс
-	log.Printf("[Engine] Нарезка чанков для таблицы %s.%s...", cfg.FromSchemaName, cfg.FromTableName)
-	chunks, err := e.source.CreateChunks(ctx, cfg.FromSchemaName, cfg.FromTableName, chunkSize)
+	// Хранилище динамических метаданных колонок, чтобы не вычитывать их повторно в воркерах
+	tableMetaMap := make(map[string]Table)
+
+	for _, cfg := range configs {
+		// 1.1. Вычитываем структуру метаданных СУБД для кэша движка
+		meta, err := sourceMetadataProvider.EnrichTableMetadata(ctx, cfg.FromSchemaName, cfg.FromTableName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enrich metadata for %s: %w", cfg.FromTableName, err)
+		}
+		taskName := fmt.Sprintf("task_%s_%s", strings.ToLower(cfg.FromSchemaName), strings.ToLower(cfg.FromTableName))
+		tableMetaMap[taskName] = meta
+
+		// 1.2. Нарезаем и атомарно персистим чанки в БД. Теперь вся сессия запишется ДО стартов потоков!
+		err = e.source.SliceAndPersistChunks(ctx, cfg, chunkSize)
+		if err != nil {
+			return nil, fmt.Errorf("failed to slice and persist chunks for table %s: %w", cfg.FromTableName, err)
+		}
+	}
+
+	// =========================================================================
+	// ФАЗА 2: ВЫЧИТКА РЕЕСТРА И КОНКУРЕНТНОЕ ВЫПОЛНЕНИЕ (Execution Phase)
+	// =========================================================================
+	log.Println("[Engine] === СТАРТ ФАЗЫ 2: Конкурентная обработка общего пула задач ===")
+
+	chunks, err := e.source.FetchAvailableChunks(ctx, configs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to slice chunks: %w", err)
+		return nil, fmt.Errorf("failed to fetch available chunks from registry: %w", err)
 	}
-	log.Printf("[Engine] Сформировано чанков: %d. Запуск пула горутин...", len(chunks))
+	log.Printf("[Engine] Из персистентного реестра БД успешно вычитано задач: %d. Запуск %d воркеров...", len(chunks), threadCount)
 
-	// Очередь теперь гоняет пустые интерфейсы 'any'
+	if len(chunks) == 0 {
+		return &Result{TotalRows: 0, Duration: time.Since(startTime)}, nil
+	}
+
+	// Наполняем общую очередь задач
 	chunkQueue := make(chan any, len(chunks))
 	for _, chunk := range chunks {
 		chunkQueue <- chunk
@@ -63,18 +90,42 @@ func (e *Engine) Run(ctx context.Context, cfg Config, chunkSize int, threadCount
 			defer wg.Done()
 
 			for chunk := range chunkQueue {
+				var currentChunkID int64
+				var taskName string
+				switch ch := chunk.(type) {
+				case Chunk[int64]:
+					currentChunkID = ch.ID
+					taskName = ch.TaskName
+				default:
+					currentChunkID = time.Now().UnixNano()
+				}
+
+				// Извлекаем предвычисленные метаданные колонок из нашего кэша Фазы 1
+				meta := tableMetaMap[taskName]
+
+				var srcColumns []string
+				var trgColumns []string
+				for _, col := range meta.Columns {
+					srcColumns = append(srcColumns, col.Name)
+					trgColumns = append(trgColumns, col.Name) // Для простоты мапим 1 в 1
+				}
+				var pkColumns []string
+				for _, pk := range meta.PkColumns {
+					pkColumns = append(pkColumns, pk.Name)
+				}
+
 				rowChan := make(chan []any, 1000)
 
-				// Потоковый продюсер
-				go func(ch any) {
+				// Потоковый Продюсер
+				go func(ch any, s, t string) {
 					defer close(rowChan)
-					_ = e.source.StreamChunk(ctx, cfg.FromSchemaName, cfg.FromTableName, srcColumns, ch, rowChan)
-				}(chunk)
+					_ = e.source.StreamChunk(ctx, s, t, srcColumns, ch, rowChan)
+				}(chunk, meta.SchemaName, meta.TableName)
 
-				// Потоковый консьюмер
-				inserted, err := e.target.WriteChunkUpsert(ctx, cfg.ToTableName, trgColumns, pkColumns, rowChan)
-				if err != nil {
-					log.Printf("[Воркер #%d][Ошибка Записи]: %v", workerID, err)
+				// Потоковый Консьюмер (Запись)
+				inserted, writeErr := e.target.WriteChunkUpsert(ctx, currentChunkID, meta.TableName, trgColumns, pkColumns, rowChan)
+				if writeErr != nil {
+					log.Printf("[Воркер #%d][Ошибка] Чанк #%d провален: %v", workerID, currentChunkID, writeErr)
 					continue
 				}
 
@@ -86,9 +137,5 @@ func (e *Engine) Run(ctx context.Context, cfg Config, chunkSize int, threadCount
 	}
 
 	wg.Wait()
-
-	return &Result{
-		TotalRows: totalMigrated,
-		Duration:  time.Since(startTime),
-	}, nil
+	return &Result{TotalRows: totalMigrated, Duration: time.Since(startTime)}, nil
 }

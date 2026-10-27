@@ -42,7 +42,11 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 		},
 	}
 
-	source := postgres.NewPostgresSource(pgInst.Pool)
+	// 1. Создаем доменную модель дефолтной таблицы чанков для теста [1.12]
+	chunkTable := core.Table{SchemaName: "public", TableName: "bublik_chunk"}
+
+	// 2. Инициализируем компоненты с учетом новых конструкторов
+	source := postgres.NewPostgresSource(pgInst.Pool, chunkTable)
 	target := postgres.NewPostgresTarget(pgInst.Pool)
 	engine := core.NewEngine(source, target)
 
@@ -50,7 +54,10 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 
 	startTime := time.Now()
 
-	result, err := engine.Run(ctx, config, chunkSize, threadCount)
+	// 3. Запускаем движок, передавая source последним аргументом в качестве провайдера метаданных [1.12]
+	// Внутри TestEngine_Run_WithTargetError:
+	configs := []core.Config{config} // Обернули одиночный cfg в срез []Config
+	result, err := engine.Run(ctx, configs, 3, 2, source)
 	if err != nil {
 		t.Fatalf("Движок рухнул под нагрузкой: %v", err)
 	}

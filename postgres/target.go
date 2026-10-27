@@ -22,7 +22,7 @@ func NewPostgresTarget(conn *pgxpool.Pool) *PostgresTarget {
 // WriteChunkUpsert реализует логику fetchAndUpsert из оригинального Бублика.
 // Принимает имя таблицы, список всех колонок, список колонок первичного ключа (PK) для ON CONFLICT
 // и канал с сырыми строками данных.
-func (pt *PostgresTarget) WriteChunkUpsert(ctx context.Context, table string, columns []string, pkColumns []string, rows <-chan []any) (int64, error) {
+func (pt *PostgresTarget) WriteChunkUpsert(ctx context.Context, chunkID int64, table string, columns []string, pkColumns []string, rows <-chan []any) (int64, error) {
 	// 1. Открываем транзакцию (Обеспечиваем Exactly-Once атомарность)
 	tx, err := pt.conn.Begin(ctx)
 	if err != nil {
