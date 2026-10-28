@@ -20,7 +20,7 @@ func TestIntegration_PostgresToPostgres_HighConcurrency(t *testing.T) {
 	threadCount := 10
 
 	t.Log("Инициализация Docker-контейнера для стресс-теста...")
-	pgInst, err := StartPostgresContainer(ctx, "bublik_stress", "postgres", "postgres")
+	pgInst, err := StartPostgresContainer(ctx, "postgres", "postgres", "postgres")
 	if err != nil {
 		t.Fatalf("Не удалось поднять контейнер: %v", err)
 	}

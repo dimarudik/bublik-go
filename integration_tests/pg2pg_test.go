@@ -15,7 +15,7 @@ func TestIntegration_PostgresToPostgres_Upsert(t *testing.T) {
 	ctx := context.Background()
 
 	t.Log("Запуск Docker-контейнера Postgres через Testcontainers...")
-	pgInst, err := StartPostgresContainer(ctx, "bublik_test", "tester", "secret_pass")
+	pgInst, err := StartPostgresContainer(ctx, "postgres", "postgres", "postgres")
 	if err != nil {
 		t.Fatalf("Не удалось поднять тестовое окружение: %v", err)
 	}
@@ -29,6 +29,7 @@ func TestIntegration_PostgresToPostgres_Upsert(t *testing.T) {
 		FromTableName:  "users_src",
 		ToSchemaName:   "public",
 		ToTableName:    "users_trg",
+		FromTaskName:   "users_task",
 		ColumnToColumn: map[string]string{
 			"id":         "id",
 			"name":       "name",
@@ -50,7 +51,7 @@ func TestIntegration_PostgresToPostgres_Upsert(t *testing.T) {
 
 	// 3. Передаем source последним аргументом в качестве провайдера метаданных [1.12]
 	configs := []core.Config{config}
-	result, err := engine.Run(ctx, configs, 3, 2, source)
+	result, err := engine.Run(ctx, configs, 10_000, 4, source)
 	if err != nil {
 		t.Fatalf("Движок завершился со сбоем: %v", err)
 	}

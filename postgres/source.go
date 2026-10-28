@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -231,47 +232,75 @@ func (ps *PostgresSource) CreateChunkTable(ctx context.Context) error {
 	return nil
 }
 
-// SliceAndPersistChunks атомарно создает таблицу и заливает туда чанки для конкретной таблицы (Фаза 1)
 func (ps *PostgresSource) SliceAndPersistChunks(ctx context.Context, cfg core.Config, chunkSize int) error {
 	chunkTableName := ps.chunkTable.FullName()
-	taskName := fmt.Sprintf("task_%s_%s", strings.ToLower(cfg.FromSchemaName), strings.ToLower(cfg.FromTableName))
 
 	var relPages int64
 	var relTuples float64
-	err := ps.conn.QueryRow(ctx, "SELECT relpages::bigint, reltuples FROM pg_class WHERE relnamespace::regnamespace::text = $1 AND relname = $2", cfg.FromSchemaName, cfg.FromTableName).Scan(&relPages, &relTuples)
+
+	// 1. Считываем физическую статистику таблицы
+	err := ps.conn.QueryRow(ctx,
+		"SELECT relpages::bigint, reltuples FROM pg_class WHERE relnamespace::regnamespace::text = $1 AND relname = $2",
+		cfg.FromSchemaName, cfg.FromTableName,
+	).Scan(&relPages, &relTuples)
 	if err != nil {
 		return fmt.Errorf("failed to read table pages from pg_class: %w", err)
 	}
-	if relPages == 0 && relTuples > 0 {
+
+	// 2. Рассчитываем шаг нарезки страниц (pagesInChunk) на основе целевого количества строк chunkSize (параметр -k)
+	var pagesInChunk int64
+	if relPages > 0 && relTuples > 0 {
+		// Математический расчет: сколько страниц займет k строк
+		pagesInChunk = int64(float64(chunkSize) * float64(relPages) / relTuples)
+		if pagesInChunk <= 0 {
+			pagesInChunk = 1 // Минимум 1 страница на чанк для сверхплотных таблиц
+		}
+	} else {
+		// Дефолт для пустых таблиц или при отсутствии накопленной статистики ANALYZE
+		pagesInChunk = 100
 		relPages = 1
 	}
 
+	sql := fmt.Sprintf(DML_BATCH_INSERT_CHUNK_TABLE, chunkTableName)
+	startPage := int64(0)
+
+	// 3. Выполняем атомарную пакетную вставку
 	tx, err := ps.conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	insertQuery := fmt.Sprintf(DML_BATCH_INSERT_CHUNK_TABLE, chunkTableName)
-	_, err = tx.Exec(ctx, insertQuery, chunkSize, taskName, cfg.FromSchemaName, cfg.FromTableName, 0, relPages, chunkSize)
+	// Передаем рассчитанный pagesInChunk в качестве инкремента и границ серии
+	_, err = tx.Exec(ctx, sql,
+		pagesInChunk,     // $1 - шаг размера чанка в страницах
+		relPages,         // $2 - верхний предел страниц
+		cfg.FromTaskName, // $3 - имя задачи
+		startPage,        // $4 - начальная точка (0)
+		relPages,         // $5 - конечная точка серии
+		pagesInChunk,     // $6 - шаг инкремента серии
+	)
 	if err != nil {
-		return fmt.Errorf("failed to batch insert chunks via generate_series: %w", err)
+		return fmt.Errorf("failed to batch insert chunks via generate_series for task %s: %w", cfg.FromTaskName, err)
 	}
-	return tx.Commit(ctx)
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction for task %s: %w", cfg.FromTaskName, err)
+	}
+
+	time.Sleep(2 * time.Minute)
+
+	return nil
 }
 
-// FetchAvailableChunks выгребает ВСЕ неназначенные чанки по списку наших задач (Фаза 2)
 func (ps *PostgresSource) FetchAvailableChunks(ctx context.Context, configs []core.Config) ([]any, error) {
 	chunkTableName := ps.chunkTable.FullName()
 
-	// Собираем все имена задач для миграции
 	var taskNames []string
 	for _, cfg := range configs {
 		taskNames = append(taskNames, fmt.Sprintf("task_%s_%s", strings.ToLower(cfg.FromSchemaName), strings.ToLower(cfg.FromTableName)))
 	}
 
-	// Для простоты вычитки делаем запрос, выбирающий UNASSIGNED чанки по списку задач
-	// В реальном Бублике тут используется SKIP LOCKED внутри пула, мы вычитаем пакет задач для старта
 	selectQuery := fmt.Sprintf("SELECT chunk_id, start_page, end_page, task_name, schema_name, table_name FROM %s WHERE status = 'UNASSIGNED' ORDER BY chunk_id", chunkTableName)
 	rows, err := ps.conn.Query(ctx, selectQuery)
 	if err != nil {

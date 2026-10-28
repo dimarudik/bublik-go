@@ -1,17 +1,15 @@
 package core
 
-// ConnectionProperties содержит настройки подключений и потоков (аналог ConnectionProperty.java).
-// Описываем теги `json` и `yaml`, чтобы один и тот же объект мог парсить оба формата.
 type ConnectionProperties struct {
 	ThreadCount    int               `json:"threadCount" yaml:"threadCount"`
 	FromProperties map[string]string `json:"fromProperties" yaml:"fromProperties"`
 	ToProperties   map[string]string `json:"toProperties" yaml:"toProperties"`
 }
 
-// Config задает правила переноса данных для конкретной таблицы (полный аналог Config.java).
 type Config struct {
 	FromSchemaName   string            `json:"fromSchemaName" yaml:"fromSchemaName"`
 	FromTableName    string            `json:"fromTableName" yaml:"fromTableName"`
+	FromTaskName     string            `json:"fromTaskName" yaml:"fromTaskName"`
 	ToSchemaName     string            `json:"toSchemaName" yaml:"toSchemaName"`
 	ToTableName      string            `json:"toTableName" yaml:"toTableName"`
 	ColumnToColumn   map[string]string `json:"columnToColumn" yaml:"columnToColumn"`
@@ -19,7 +17,6 @@ type Config struct {
 	// При необходимости сюда легко добавляются остальные поля из Java рекорда (withTTL, timestamp и др.)
 }
 
-// GetChunkTable возвращает дефолтную или кастомную доменную модель таблицы чанков.
 func (cp *ConnectionProperties) GetChunkTable() Table {
 	schema := cp.FromProperties["chunkSchemaName"]
 	table := cp.FromProperties["chunkTableName"]
@@ -32,7 +29,6 @@ func (cp *ConnectionProperties) GetChunkTable() Table {
 	return Table{SchemaName: schema, TableName: table}
 }
 
-// GetOutboxTable возвращает дефолтную или кастомную доменную модель таблицы аутбокса.
 func (cp *ConnectionProperties) GetOutboxTable() Table {
 	schema := cp.ToProperties["outboxSchemaName"]
 	table := cp.ToProperties["outboxTableName"]
