@@ -2,20 +2,24 @@ package postgres
 
 const (
 	DDL_CREATE_CHUNK_TABLE = `create table %s (
-                    chunk_id bigint generated always as identity primary key, 
-                    uuid varchar(36), 
-                    start_page bigint, 
-                    end_page bigint, 
-                    schema_name varchar(128), 
-                    table_name varchar(256), 
-                    required bigint, 
-                    copied bigint, 
-                    task_name varchar(128), 
-                    status varchar(20)  default 'UNASSIGNED', 
-                    start_ts timestamp, 
-                    end_ts timestamp, 
-                    err_msg varchar(2048), 
-                    unique (uuid, start_page, end_page, task_name, status));`
+			chunk_id bigint generated always as identity primary key, 
+			uuid varchar(36), 
+			start_page bigint, 
+			end_page bigint, 
+			schema_name varchar(128), 
+			table_name varchar(256), 
+			required bigint, 
+			copied bigint, 
+			task_name varchar(128), 
+			status varchar(20)  default 'UNASSIGNED', 
+			start_ts timestamp, 
+			end_ts timestamp, 
+			err_msg varchar(2048), 
+			unique (uuid, start_page, end_page, task_name, status))`
+	DDL_CREATE_OUTBOX_TABLE = `create table %s (
+            chunk_id bigint primary key,
+            task_name varchar(128),
+            copied bigint)`
 	DDL_DROP_CHUNK_TABLE         = `DROP TABLE IF EXISTS %s`
 	SQL_NUMBER_OF_TUPLES         = `SELECT reltuples::bigint, relpages::bigint FROM pg_class WHERE relnamespace::regnamespace::text = $1 AND relname = $2`
 	DML_BATCH_INSERT_CHUNK_TABLE = `

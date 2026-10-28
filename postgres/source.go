@@ -222,6 +222,15 @@ func (ps *PostgresSource) EnrichTableMetadata(ctx context.Context, schema, table
 	return t, nil
 }
 
+func (ps *PostgresSource) CreateChunkTable(ctx context.Context) error {
+	chunkTableName := ps.chunkTable.FullName()
+	createTableSQL := fmt.Sprintf(DDL_CREATE_CHUNK_TABLE, chunkTableName)
+	if _, err := ps.conn.Exec(ctx, createTableSQL); err != nil {
+		return fmt.Errorf("failed to create chunk table: %w", err)
+	}
+	return nil
+}
+
 // SliceAndPersistChunks атомарно создает таблицу и заливает туда чанки для конкретной таблицы (Фаза 1)
 func (ps *PostgresSource) SliceAndPersistChunks(ctx context.Context, cfg core.Config, chunkSize int) error {
 	chunkTableName := ps.chunkTable.FullName()

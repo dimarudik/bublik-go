@@ -39,10 +39,11 @@ func TestIntegration_PostgresToPostgres_Upsert(t *testing.T) {
 
 	// 1. Создаем доменную модель дефолтной таблицы чанков для этого теста [1.12]
 	chunkTable := core.Table{SchemaName: "public", TableName: "bublik_chunk"}
+	outboxTable := core.Table{SchemaName: "public", TableName: "bublik_outbox"}
 
 	// 2. Инициализируем компоненты с учетом новых параметров
 	source := postgres.NewPostgresSource(pgInst.Pool, chunkTable)
-	target := postgres.NewPostgresTarget(pgInst.Pool)
+	target := postgres.NewPostgresTarget(pgInst.Pool, outboxTable)
 	engine := core.NewEngine(source, target)
 
 	t.Log("Старт движка миграции...")

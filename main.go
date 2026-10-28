@@ -59,23 +59,13 @@ func main() {
 			}
 			defer pool.Close()
 
-			// Извлекаем доменную модель таблицы чанков из YAML-конфига (кастомную или дефолтную) [1.12]
 			chunkTable := props.GetChunkTable()
-			log.Printf("[CLI] Служебная таблица метаданных чанков: %s", chunkTable.FullName())
+			outboxTable := props.GetOutboxTable()
 
-			// 4. Инициализируем компоненты движка
-			// Передаем chunkTable вторым аргументом в конструктор пакета postgres! [1.12]
 			source := postgres.NewPostgresSource(pool, chunkTable)
-			target := postgres.NewPostgresTarget(pool)
+			target := postgres.NewPostgresTarget(pool, outboxTable)
 			engine := core.NewEngine(source, target)
 
-			//totalRows := int64(0)
-			//sessionStart := time.Now()
-
-			// Внутри main.go в методе RunE:
-			log.Println("Старт двухфазного движка миграции Bublik-Go...")
-
-			// 5. Запускаем двухфазный движок миграции для всего массива таблиц скопом
 			log.Println("[CLI] Старт двухфазного движка миграции Bublik-Go...")
 			result, err := engine.Run(ctx, configs, chunkSize, props.ThreadCount, source)
 			if err != nil {

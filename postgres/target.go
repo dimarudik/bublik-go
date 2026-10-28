@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bublik-go/core"
 	"context"
 	"fmt"
 	"strings"
@@ -9,21 +10,28 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PostgresTarget отвечает за запись данных в целевую БД Postgres.
 type PostgresTarget struct {
-	conn *pgxpool.Pool
+	conn        *pgxpool.Pool
+	outboxTable core.Table
 }
 
-// NewPostgresTarget создает новый экземпляр целевого хранилища.
-func NewPostgresTarget(conn *pgxpool.Pool) *PostgresTarget {
-	return &PostgresTarget{conn: conn}
+func NewPostgresTarget(conn *pgxpool.Pool, outboxTable core.Table) *PostgresTarget {
+	return &PostgresTarget{
+		conn:        conn,
+		outboxTable: outboxTable,
+	}
 }
 
-// WriteChunkUpsert реализует логику fetchAndUpsert из оригинального Бублика.
-// Принимает имя таблицы, список всех колонок, список колонок первичного ключа (PK) для ON CONFLICT
-// и канал с сырыми строками данных.
+func (ps *PostgresTarget) CreateOutboxTable(ctx context.Context) error {
+	outboxTableName := ps.outboxTable.FullName()
+	createTableSQL := fmt.Sprintf(DDL_CREATE_OUTBOX_TABLE, outboxTableName)
+	if _, err := ps.conn.Exec(ctx, createTableSQL); err != nil {
+		return fmt.Errorf("failed to create outbox table: %w", err)
+	}
+	return nil
+}
+
 func (pt *PostgresTarget) WriteChunkUpsert(ctx context.Context, chunkID int64, table string, columns []string, pkColumns []string, rows <-chan []any) (int64, error) {
-	// 1. Открываем транзакцию (Обеспечиваем Exactly-Once атомарность)
 	tx, err := pt.conn.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to begin tx: %w", err)

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/testcontainers/testcontainers-go/modules/postgres"
 )
 
 // Engine теперь зависит ТОЛЬКО от абстрактных интерфейсов нашего ядра.
@@ -31,28 +29,29 @@ type Result struct {
 }
 
 // Run запускает двухфазный конвейер миграции: сначала полная нарезка всех таблиц, затем параллельное выполнение
-func (e *Engine) Run(ctx context.Context, configs []Config, chunkSize int, threadCount int, sourceMetadataProvider interface {
-	EnrichTableMetadata(ctx context.Context, schema, table string) (Table, error)
-}) (*Result, error) {
+func (e *Engine) Run(
+	ctx context.Context,
+	configs []Config,
+	chunkSize int,
+	threadCount int,
+	sourceMetadataProvider interface {
+		EnrichTableMetadata(ctx context.Context, schema, table string) (Table, error)
+	}) (*Result, error) {
 	startTime := time.Now()
 
-	// =========================================================================
-	// ФАЗА 1: ГЕНЕРАЦИЯ ПОЛНОГО РЕЕСТРА ЗАДАЧ (Pre-Slicing)
-	// =========================================================================
-	log.Println("[Engine] === СТАРТ ФАЗЫ 1: Нарезка и фиксация чанков для ВСЕХ таблиц ===")
-
-	// Хранилище динамических метаданных колонок, чтобы не вычитывать их повторно в воркерах
-	tableMetaMap := make(map[string]Table)
-
-	chunkTableName := .chunkTable.FullName()
-	createTableSQL := fmt.Sprintf(DDL_CREATE_CHUNK_TABLE, chunkTableName)
-	if _, err := ps.conn.Exec(ctx, createTableSQL); err != nil {
-		return fmt.Errorf("failed to ensure chunk table exists: %w", err)
+	err := e.source.CreateChunkTable(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create chunk table: %w", err)
 	}
 
+	err = e.target.CreateOutboxTable(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create outbox table: %w", err)
+	}
+
+	tableMetaMap := make(map[string]Table)
 
 	for _, cfg := range configs {
-		// 1.1. Вычитываем структуру метаданных СУБД для кэша движка
 		meta, err := sourceMetadataProvider.EnrichTableMetadata(ctx, cfg.FromSchemaName, cfg.FromTableName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to enrich metadata for %s: %w", cfg.FromTableName, err)
@@ -60,16 +59,12 @@ func (e *Engine) Run(ctx context.Context, configs []Config, chunkSize int, threa
 		taskName := fmt.Sprintf("task_%s_%s", strings.ToLower(cfg.FromSchemaName), strings.ToLower(cfg.FromTableName))
 		tableMetaMap[taskName] = meta
 
-		// 1.2. Нарезаем и атомарно персистим чанки в БД. Теперь вся сессия запишется ДО стартов потоков!
 		err = e.source.SliceAndPersistChunks(ctx, cfg, chunkSize)
 		if err != nil {
 			return nil, fmt.Errorf("failed to slice and persist chunks for table %s: %w", cfg.FromTableName, err)
 		}
 	}
 
-	// =========================================================================
-	// ФАЗА 2: ВЫЧИТКА РЕЕСТРА И КОНКУРЕНТНОЕ ВЫПОЛНЕНИЕ (Execution Phase)
-	// =========================================================================
 	log.Println("[Engine] === СТАРТ ФАЗЫ 2: Конкурентная обработка общего пула задач ===")
 
 	chunks, err := e.source.FetchAvailableChunks(ctx, configs)

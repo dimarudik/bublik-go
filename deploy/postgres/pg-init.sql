@@ -12,11 +12,11 @@ CREATE TABLE IF NOT EXISTS users_trg (
     updated_at TIMESTAMP
     );
 
-CREATE TABLE IF NOT EXISTS bublik_outbox (
+/*CREATE TABLE IF NOT EXISTS bublik_outbox (
     chunk_id BIGINT PRIMARY KEY,
     processed_at TIMESTAMP
 );
-
+*/
 INSERT INTO users_src (id, name, email, updated_at)
 SELECT
     n AS id,
